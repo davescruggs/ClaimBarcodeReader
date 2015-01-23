@@ -1,0 +1,151 @@
+<apex:page standardController="Claim__c" extensions="ClaimBarcodeExtensionController">
+	<head>
+		<title>Package Scanner (JOB)</title>
+	</head>
+	<body>  
+		<div id="container">
+            <apex:form >
+                <apex:actionFunction action="{!quicksave}" name="Save" rerender="out" 
+            oncomplete="refreshFeed();"/>
+                <apex:pageBlock title="Edit Claim">
+                    <apex:pageBlockSection columns="1">
+                        <canvas width="320" height="240" id="picture"></canvas>
+                        <p>
+                            Photo: <input id="Take-Picture" type="file" accept="image/*;capture=camera" />
+                        </p>
+                        <p id="textbit"></p>
+                        <apex:outputText value="{!Claim__c.Name}" />
+                        <apex:inputField id="trackingnumber" value="{!Claim__c.Tracking_Number__c}"/>
+                    </apex:pageBlockSection>
+                    <apex:pageBlockButtons >
+                        <button type="button" onclick="Save();"
+							style="position:fixed;bottom:5px;right:5px;padding:5px 10px;font-size:13px; font-weight:bold; line-height:18px;background-color:#0271BF;background-image:-moz-linear-gradient(#2DADDC,#0271BF);background-repeat:repeat-x;border-color:#096EB3;" id="saveclaimbutton">Save Tracking Number</button>
+                    </apex:pageBlockButtons>
+                </apex:pageBlock>
+            </apex:form>
+		</div>
+        <script type='text/javascript' src='/canvas/sdk/js/publisher.js' />  
+        <script> 
+            //Fired by the publisher when the user selects a Visualforce action
+            //in the publisher. This event indicates that the Visualforce is
+            //being displayed. 
+            Sfdc.canvas.publisher.subscribe({name: "publisher.showPanel", onData:function(e) {
+                //Enables the Share button on the publisher
+                Sfdc.canvas.publisher.publish({name: "publisher.setValidForSubmit", payload:"true"});
+            }});
+        
+            //Fired by the publisher to indicate to the page that the submit
+        	//button has been pressed.
+            Sfdc.canvas.publisher.subscribe({name: "publisher.post",
+                onData:function(e) {
+                    //Time for some Javascript remoting
+                    TrackingNum = document.querySelector("[id*='trackingnumber']");
+                    console.log('publisher post: ({!Claim__c.id}) - ' + TrackingNum.value);
+                    updateBarcode('{!Claim__c.id}', TrackingNum.value);
+                    //Closes the publisher and refreshes the feed
+                    sforce.one.navigateToSObject('{!Claim__c.id}','detail');
+                    Sfdc.canvas.publisher.publish({name: "publisher.close", payload:{ refresh:"true"}});
+            }}); 
+            function refreshFeed() { 
+                Sfdc.canvas.publisher.publish({name : 'publisher.refresh', payload : {feed:true}}); 
+                //window.top.location='/{!Claim__c.id}'; // reset the page
+            }
+        </script>   
+        <apex:includeScript value="{!URLFOR($Resource.JSOnlyBarcodes, '/JOB.js')}"/>
+		<script type="text/javascript">
+			var takePicture = document.querySelector("#Take-Picture"),
+			showPicture = document.createElement("img");
+        	Result = document.querySelector("#textbit"); 
+        	TrackingField = document.querySelector("[id*='trackingnumber']"); // [name*='trackingnumber']
+        	console.log('tracking field id: ' + TrackingField.id);
+			var canvas =document.getElementById("picture");
+			var ctx = canvas.getContext("2d");
+        // Need to override instantiation of DecoderWorker
+        	JOB.DecoderWorker = new Worker("{!URLFOR($Resource.JSOnlyBarcodes, 'DecoderWorker.js')}"); 
+        // JOB.Init doesn't call and set for the Resource Bundle correctly, so we're overriding it.
+        //	JOB.Init();
+        // Begin to override
+            JOB.ScanCanvas = JOB.FixCanvas(document.createElement("canvas"));
+            JOB.ScanCanvas.width = 640;
+            JOB.ScanCanvas.height = 480;
+            JOB.ScanContext = JOB.ScanCanvas.getContext("2d");
+            var script  = document.createElement('script');
+        	script.src  = "{!URLFOR($Resource.JSOnlyBarcodes, '/exif.js')}"; // override to fix resource bundle issue
+            script.type = 'text/javascript';
+            document.getElementsByTagName('head').item(0).appendChild(script);
+        // End JOB.Init override
+        
+			JOB.SetImageCallback(function(result) {
+				if(result.length > 0){
+					var tempArray = [];
+					for(var i = 0; i < result.length; i++) {
+						tempArray.push(result[i].Format+" : "+result[i].Value);
+					}
+                    // post to tracking number form
+                    console.log('barcode: ' + tempArray);
+                    TrackingField.value = tempArray; 
+					Result.innerHTML=tempArray.join("<br />");
+                    console.log('testing for submit: ({!Claim__c.id}) - ' + TrackingField.value);
+				}else{
+					if(result.length === 0) {
+						Result.innerHTML="Decoding failed.";
+					}
+				}
+			});
+			JOB.PostOrientation = true;
+			JOB.OrientationCallback = function(result) {
+				canvas.width = result.width;
+				canvas.height = result.height;
+				var data = ctx.getImageData(0,0,canvas.width,canvas.height);
+				for(var i = 0; i < data.data.length; i++) {
+					data.data[i] = result.data[i];
+				}
+				ctx.putImageData(data,0,0);
+			};
+			JOB.SwitchLocalizationFeedback(true);
+			JOB.SetLocalizationCallback(function(result) {
+				ctx.beginPath();
+				ctx.lineWIdth = "2";
+				ctx.strokeStyle="red";
+				for(var i = 0; i < result.length; i++) {
+					ctx.rect(result[i].x,result[i].y,result[i].width,result[i].height); 
+				}
+				ctx.stroke();
+			});
+			if(takePicture && showPicture) {
+				takePicture.onchange = function (event) {
+					var files = event.target.files;
+					if (files && files.length > 0) {
+						file = files[0];
+						try {
+							var URL = window.URL || window.webkitURL;
+							showPicture.onload = function(event) {
+								Result.innerHTML="";
+								JOB.DecodeImage(showPicture);
+								URL.revokeObjectURL(showPicture.src);
+							};
+							showPicture.src = URL.createObjectURL(file);
+						}
+						catch (e) {
+							try {
+								var fileReader = new FileReader();
+								fileReader.onload = function (event) {
+									showPicture.onload = function(event) {
+										Result.innerHTML="";
+										console.log("filereader");
+										JOB.DecodeImage(showPicture);
+									};
+									showPicture.src = event.target.result;
+								};
+								fileReader.readAsDataURL(file);
+							}
+							catch (e) {
+								Result.innerHTML = "Neither createObjectURL or FileReader are supported";
+							}
+						}
+					}
+				};
+			}
+		</script>
+	</body>
+</apex:page>
